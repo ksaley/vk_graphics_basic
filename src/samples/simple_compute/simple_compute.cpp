@@ -1,5 +1,8 @@
 #include "simple_compute.h"
 
+#include <random>
+#include <chrono>
+
 #include <vk_pipeline.h>
 #include <vk_buffers.h>
 #include <vk_utils.h>
@@ -96,14 +99,14 @@ void SimpleCompute::SetupSimplePipeline()
 
   // Заполнение буферов
   std::vector<float> values(m_length);
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_real_distribution<float> dis(0.0, 10.0);
   for (uint32_t i = 0; i < values.size(); ++i) {
-    values[i] = (float)i;
+    values[i] = dis(gen);
   }
+  m_values = values;
   m_pCopyHelper->UpdateBuffer(m_A, 0, values.data(), sizeof(float) * values.size());
-  for (uint32_t i = 0; i < values.size(); ++i) {
-    values[i] = (float)i * i;
-  }
-  m_pCopyHelper->UpdateBuffer(m_B, 0, values.data(), sizeof(float) * values.size());
 }
 
 void SimpleCompute::BuildCommandBufferSimple(VkCommandBuffer a_cmdBuff, VkPipeline)
@@ -122,7 +125,7 @@ void SimpleCompute::BuildCommandBufferSimple(VkCommandBuffer a_cmdBuff, VkPipeli
 
   vkCmdPushConstants(a_cmdBuff, m_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(m_length), &m_length);
 
-  vkCmdDispatch(a_cmdBuff, 1, 1, 1);
+  vkCmdDispatch(a_cmdBuff, 1 + (m_length - 1) / 512, 1, 1);
 
   VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
 }
@@ -217,15 +220,45 @@ void SimpleCompute::Execute()
   fenceCreateInfo.flags = 0;
   VK_CHECK_RESULT(vkCreateFence(m_device, &fenceCreateInfo, NULL, &m_fence));
 
+  auto start = std::chrono::high_resolution_clock::now();
   // Отправляем буфер команд на выполнение
   VK_CHECK_RESULT(vkQueueSubmit(m_computeQueue, 1, &submitInfo, m_fence));
 
   //Ждём конца выполнения команд
   VK_CHECK_RESULT(vkWaitForFences(m_device, 1, &m_fence, VK_TRUE, 100000000000));
+  auto end = std::chrono::high_resolution_clock::now();
 
   std::vector<float> values(m_length);
   m_pCopyHelper->ReadBuffer(m_sum, 0, values.data(), sizeof(float) * values.size());
-  for (auto v: values) {
-    std::cout << v << ' ';
+  float sum = 0.0;
+  for (const auto& v : values)
+  {
+    sum += v;
   }
+  std::chrono::duration<double, std::milli> duration = end - start;
+  // шейдер
+  std::cout << "Shader sum: " << sum << std::endl;
+  std::cout << "Shader time:  " << duration/std::chrono::milliseconds(1) << std::endl;
+
+  std::vector<float> B(m_length, 0);
+  sum   = 0.0;
+  start = std::chrono::high_resolution_clock::now();
+  for (int i = 0; i < m_length; ++i)
+  {
+    for (int j = -3; j <= 3; ++j)
+    {
+      int index = i + j;
+      if (index >= 0 && index < m_length)
+      {
+        B[i] += (m_values[index] / 7.0f);
+      }
+    }
+    sum += B[i];
+  }
+  end      = std::chrono::high_resolution_clock::now();
+  duration = end - start;
+
+  // c++
+  std::cout << "CPU sum: " << sum << std::endl;
+  std::cout << "CPU time: " << duration / std::chrono::milliseconds(1) << std::endl;
 }
